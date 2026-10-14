@@ -1,0 +1,55 @@
+# agentmemory 远程服务
+# 单容器自包含：iii 引擎 (0.0.0.0:3111) + agentmemory worker 同容器运行
+# 仅发布 REST 端口 3111；viewer (3113) 等其余端口保持容器内部，按需 SSH 隧道访问
+#
+# 使用：
+#   1. cp .env.example .env 并编辑（或留空让容器首次启动自动生成密钥）
+#   2. docker compose up -d --build
+#   3. docker compose logs 里搜 AGENTMEMORY_SECRET= 拿到密钥（只打印一次）
+#   4. 健康检查: curl http://<host>:3111/agentmemory/livez
+
+services:
+  agentmemory:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        AGENTMEMORY_VERSION: "0.9.30"
+        III_VERSION: "0.22.1"
+        III_SDK_VERSION: "0.22.1"
+    restart: unless-stopped
+    environment:
+      # 预置密钥则直接生效；留空则首次启动自动生成并持久化到 /data/.hmac
+      AGENTMEMORY_SECRET: ${AGENTMEMORY_SECRET:-}
+      # 可选 LLM 能力（压缩/摘要）；不设则 keyless 模式（BM25 + 可选本地向量）
+      #ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      #OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # 可选：本地嵌入（免费语义检索，首次请求下载 all-MiniLM-L6-v2 后本地推理）
+      EMBEDDING_PROVIDER: local
+      # viewer 默认只绑容器 loopback，端口映射不可达；绑 0.0.0.0 后配合下方 3113 发布
+      # （非 loopback 绑定要求已设 AGENTMEMORY_SECRET + 显式 VIEWER_ALLOWED_HOSTS）
+      AGENTMEMORY_VIEWER_HOST: "0.0.0.0"
+      # 会话启动时自动检索并注入相关记忆（按 token 消耗计费，默认关）
+      AGENTMEMORY_INJECT_CONTEXT: "true"
+      # 允许通过 Host 头访问 viewer 的来源，值必须带端口（Host 头形如 localhost:3113）
+      VIEWER_ALLOWED_HOSTS: "localhost:3113,127.0.0.1:3113"
+    ports:
+      # 仅暴露 REST/MCP 端口。注意：这是明文 HTTP + Bearer 认证，
+      # 请确保机器防火墙/安全组只放行可信来源的 3111
+      - "0.0.0.0:3111:3111"
+      # viewer 只发布到宿主机 loopback（本机浏览器 http://localhost:3113 可访问，
+      # 远程需 SSH 隧道 -L 3113:127.0.0.1:3113）
+      - "127.0.0.1:3113:3113"
+    volumes:
+      # 持久化：状态库、BM25 索引、stream 积压、.hmac 密钥
+      - agentmemory-data:/data
+    # 仅发布 3111；3113 (viewer) 若需访问：
+    #   ssh -L 3113:127.0.0.1:3113 <host> 后 docker exec -it <容器> sh -c 'wget -qO- http://127.0.0.1:3113'
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  agentmemory-data:
